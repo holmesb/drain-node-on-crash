@@ -9,7 +9,7 @@ kubectl apply -f .
 ```
 
 ## Default settings
-NODE_TIMEOUT = 360  (seconds)
+NODE_TIMEOUT = 30  (seconds)
 
 AUTO_UNCORDON = true (This setting will automatically uncordon a node that was drained by the script. NOTE: Nodes that have cordon outside this app will not be changed.)
 

@@ -1,26 +1,39 @@
 #!/bin/bash
 
+declare -A levels=([DEBUG]=0 [INFO]=1 [WARN]=2 [ERROR]=3)
+script_logging_level="INFO"
+
+function log {
+  local log_message=$1
+  local log_priority=$2
+  #check if level exists:
+  [[ ${levels[$log_priority]} ]] || return 1
+  #check if level is enough:
+  (( ${levels[$log_priority]} < ${levels[$script_logging_level]} )) && return 2
+  echo "[$(date --rfc-3339=seconds)] : ${log_priority} : ${log_message}"
+}
+
 if [[ -z $NODE_TIMEOUT ]]
 then
-	NODE_TIMEOUT=360
+	NODE_TIMEOUT=30
 fi
-echo "Node timeout: $NODE_TIMEOUT"
+log "Node timeout: $NODE_TIMEOUT" "INFO"
 
 if [[ -z $AUTO_UNCORDON ]]
 then
 	AUTO_UNCORDON=true
 fi
-echo "Auto uncordon node on recovery is $AUTO_UNCORDON"
+log "Auto uncordon node on recovery is $AUTO_UNCORDON" "INFO"
 
 if [[ -z $REMOVE_PODS ]]
 then
-        REMOVE_PODS=true
+  REMOVE_PODS=true
 fi
-echo "Remove all pods from drained node is $REMOVE_PODS"
+log "Remove all pods from drained node is $REMOVE_PODS" "INFO"
 
 if [[ -z $CATTLE_CLUSTER_AGENT ]]
 then
-        CATTLE_CLUSTER_AGENT=true
+  CATTLE_CLUSTER_AGENT=true
 fi
 
 touch ~/drained_nodes
@@ -29,24 +42,23 @@ while true
 do
 	if curl -v --silent http://localhost:4040/ 2>&1 | grep $HOSTNAME
 	then
-		echo "Leader"
+		log "Leader" "DEBUG"
 		for node in $(kubectl get nodes --no-headers --output=name)
 		do
-			echo "#########################################################"
-			echo "Checking $node"
+			log "Checking $node" "DEBUG"
 			current_status="$(kubectl get --no-headers $node | awk '{print $2}')"
-			##echo "Current node status: $current_status"
+			log "Current node status: $current_status" "DEBUG"
 			if [[ "$current_status" == "Ready" ]] || [[ "$current_status" == "Ready,SchedulingDisabled" ]]
 			then
-				echo "$node is ready"
+				log "$node is ready" "DEBUG"
 				if cat ~/drained_nodes | grep -x $node
 				then
-					echo "$node has recovered"
+					log "$node has recovered" "INFO"
 					cat ~/drained_nodes | grep -v -x $node > ~/drained_nodes.tmp
 					mv ~/drained_nodes.tmp ~/drained_nodes
 					if [[ "$AUTO_UNCORDON" == "true" ]]
 					then
-						echo "uncordon $node"
+						log "uncordon $node" "INFO"
 						kubectl uncordon $node
 					fi
 				fi
@@ -54,40 +66,40 @@ do
 			else
 				if cat ~/drained_nodes | grep -x $node
 				then
-					echo "$node is already drained, skipping..."
+					log "$node is already drained, skipping..." "INFO"
 				else
-					echo "$node in Not ready, rechecking..."
+					log "$node in Not ready, rechecking..." "INFO"
 					count=0
 					while true
 					do
 						current_status="$(kubectl get --no-headers $node | awk '{print $2}')"
 						if [[ ! "$current_status" == "Ready" ]] || [[ "$current_status" == "Ready,SchedulingDisabled" ]]
 						then
-							echo "Sleeping for $count seconds"
+							log "Sleeping for $count seconds" "INFO"
 							sleep 1
 							count=$((count+1))
 						else
-							echo "$node is now ready"
+							log "$node is now ready" "INFO"
 							cat ~/drained_nodes | grep -v -x $node > ~/drained_nodes.tmp
-			                                mv ~/drained_nodes.tmp ~/drained_nodes
+	            mv ~/drained_nodes.tmp ~/drained_nodes
 							break
 						fi
 						if [ $count -gt $NODE_TIMEOUT ]
 						then
-							echo "$node has been down for greater than 5Mins, assuming node is down for good."
-							echo "Starting drain of node..."
+							log "$node has been down for greater than 30s." "INFO"
+							log "Starting drain of node..." "INFO"
 							kubectl drain $node --ignore-daemonsets --delete-local-data --force
 							echo $node >> ~/drained_nodes
-							echo "Sleeping for 60 seconds..."
+							log "Sleeping for 60 seconds..." "INFO"
 							sleep 60
 							if [[ "$REMOVE_PODS" == "true" ]]
 							then
-								echo "Getting all pods on node..."
-								node_short="$(echo $node | awk -F '/' '{print $2}')"
+								log "Getting all pods on node..." "INFO"
+								node_short="$(log $node | awk -F '/' '{print $2}')"
 								kubectl get pods --all-namespaces -o wide --field-selector spec.nodeName="$node_short" --no-headers | awk '{print $1 "," $2}' > /tmp/pods.csv
 								while IFS=, read -r namespace podname
 								do
-									echo "Removing $podname from $namespace"
+									log "Removing $podname from $namespace" "INFO"
 									podcount=0
 									while ! kubectl delete pods "$podname" -n "$namespace" --grace-period=0 --force
 									do
@@ -102,25 +114,25 @@ do
 							fi
 							if [[ "$CATTLE_CLUSTER_AGENT" == "true" ]]
 							then
-								echo "Checking if cattle-cluster-agent is already running..."
+								log "Checking if cattle-cluster-agent is already running..." "DEBUG"
 								if [[ ! "$(kubectl get pods -n cattle-system | grep ^'cattle-cluster-agent-' | awk '{print $3}')" == "Running" ]]
 								then
-									echo "Scaling up to force pod to new node..."
+									log "Scaling up to force pod to new node..." "DEBUG"
 									kubectl scale --replicas=2 deployment/cattle-cluster-agent -n cattle-system
 									cattlecount=0
 									while ! kubectl get pods -n cattle-system | grep ^'cattle-cluster-agent-' | awk '{print $3}' | grep "Running"
 									do
 										sleep 1
-                                                                                cattlecount=$((cattlecount+1))
-                                                                                if [ $cattlecount -gt 60 ]
-                                                                                then
-                                                                                        break
-                                                                                fi
+                      cattlecount=$((cattlecount+1))
+                      if [ $cattlecount -gt 30 ]
+                      then
+                        break
+                      fi
 									done
-									echo "Scaling back down to 1..."
+									log "Scaling back down to 1..." "DEBUG"
 									kubectl scale --replicas=1 deployment/cattle-cluster-agent -n cattle-system
 								else
-									echo "cattle-cluster-agent is alreayd running..."
+									log "cattle-cluster-agent is already running..." "DEBUG"
 								fi
 							fi
 							break
@@ -128,11 +140,10 @@ do
 					done
 				fi
 			fi
-			echo "#########################################################"
 		done
 	else
-		echo "Standby"
+		log "Standby" "DEBUG"
 	fi
-	echo "Sleeping for 5s before rechecking..."
+	log "Sleeping for 5s before rechecking..." "DEBUG"
 	sleep 5
 done
