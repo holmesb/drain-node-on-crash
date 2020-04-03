@@ -40,7 +40,8 @@ touch ~/drained_nodes
 
 while true
 do
-	if curl -v --silent http://localhost:4040/ 2>&1 | grep $HOSTNAME
+	hostname1=$(curl -v --silent http://localhost:4040/ 2>&1 | grep $HOSTNAME)
+	if [[ $hostname1 == *"$HOSTNAME"* ]]
 	then
 		log "Leader" "DEBUG"
 		for node in $(kubectl get nodes --no-headers --output=name)
